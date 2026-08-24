@@ -3,6 +3,10 @@
 Working demo built from the intern team's Week 2/3 output (`original_intern_code/`)
 per Solomon's SRS (`original_intern_code/Government_Payment_Analytics_Portal_MVP_SRS.pdf`).
 
+**Taking this over? Read [HANDOFF.md](HANDOFF.md) first.** It covers how to run
+it, what needs transferring out of personal accounts, the known traps, and the
+decisions still open.
+
 ## Run it
 
 ```bash
