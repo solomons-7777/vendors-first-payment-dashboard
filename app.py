@@ -24,6 +24,100 @@ from analytics.pipeline import PipelineError, build_dashboard_workbook
 
 st.set_page_config(page_title="Government Payment Analytics Portal", layout="wide")
 
+# The federal Prompt Payment Act gives an agency 30 days from a proper invoice
+# before interest is owed. Every lag figure on the KPI rows is measured against
+# it, so the numbers mean something without the reader supplying a benchmark.
+PROMPT_PAY_DAYS = 30
+
+# Matches the cost_of_capital used for Estimated_Penalty in analytics/pipeline.py.
+COST_OF_CAPITAL = 0.12
+
+
+def headline_stats(df: pd.DataFrame) -> dict:
+    """Derived KPI figures, each paired with something to compare it against."""
+    lag = df["Processing Lag (d)"]
+    obligations = df["Obligation ($)"].sum()
+    late = df[lag > PROMPT_PAY_DAYS]
+    penalty = df["Estimated Penalty"].sum()
+    agency_lag = df.groupby("Awarding Agency")["Processing Lag (d)"].mean().sort_values()
+
+    return {
+        "invoices": len(df),
+        "late_count": len(late),
+        "late_share": len(late) / len(df) if len(df) else 0.0,
+        "avg_lag": lag.mean(),
+        "lag_vs_standard": lag.mean() - PROMPT_PAY_DAYS,
+        "obligations": obligations,
+        "late_value": late["Obligation ($)"].sum(),
+        "late_value_share": late["Obligation ($)"].sum() / obligations if obligations else 0.0,
+        "penalty": penalty,
+        "penalty_share": penalty / obligations if obligations else 0.0,
+        "fastest_agency": agency_lag.index[0],
+        "fastest_lag": agency_lag.iloc[0],
+        "slowest_agency": agency_lag.index[-1],
+        "slowest_lag": agency_lag.iloc[-1],
+        "agency_spread": agency_lag.iloc[-1] - agency_lag.iloc[0],
+    }
+
+
+def render_headline(df: pd.DataFrame) -> None:
+    """KPI rows shared by Dashboard Home and the Executive Summary tab."""
+    s = headline_stats(df)
+
+    st.markdown("##### Are invoices being paid on time?")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "Paid late", f"{s['late_share']:.0%}",
+        delta=f"{s['late_count']:,} of {s['invoices']:,} invoices",
+        delta_color="off", border=True,
+    )
+    c2.metric(
+        "Average wait", f"{s['avg_lag']:.1f} days",
+        delta=f"{s['lag_vs_standard']:+.1f} vs {PROMPT_PAY_DAYS}-day standard",
+        delta_color="inverse", border=True,
+    )
+    c3.metric(
+        "Value waiting", f"${s['late_value'] / 1e6:,.1f}M",
+        delta=f"{s['late_value_share']:.0%} of ${s['obligations'] / 1e6:,.0f}M obligated",
+        delta_color="off", border=True,
+    )
+    c4.metric(
+        "Cost of the delay", f"${s['penalty'] / 1e6:,.2f}M",
+        delta=f"{s['penalty_share']:.1%} of obligations",
+        delta_color="off", border=True,
+    )
+    st.caption(
+        f"**Late** means over {PROMPT_PAY_DAYS} days, the federal Prompt Payment Act "
+        f"standard for a proper invoice. **Cost of the delay** is what that wait costs "
+        f"contractors to finance, at {COST_OF_CAPITAL:.0%} annual cost of capital."
+    )
+
+    st.markdown("##### Where the delay is concentrated")
+    d1, d2, d3 = st.columns(3)
+    d1.metric(
+        "Slowest agency", f"{s['slowest_lag']:.1f} days",
+        delta=s["slowest_agency"], delta_color="off", border=True,
+    )
+    d2.metric(
+        "Fastest agency", f"{s['fastest_lag']:.1f} days",
+        delta=s["fastest_agency"], delta_color="off", border=True,
+    )
+    d3.metric(
+        "Gap between them", f"{s['agency_spread']:.1f} days",
+        delta="same work, different agency", delta_color="off", border=True,
+    )
+
+    # The average alone reads as "fine" whenever it sits under the standard, so
+    # say out loud when it is hiding a tail that does not.
+    if s["lag_vs_standard"] < 0 and s["late_share"] >= 0.20:
+        st.info(
+            f"The average sits under the {PROMPT_PAY_DAYS}-day standard, but "
+            f"{s['late_share']:.0%} of invoices do not. The average is hiding the "
+            f"tail: {s['agency_spread']:.1f} days separate the fastest agency from "
+            f"the slowest."
+        )
+
+
 if not is_authenticated():
     login_form()
     st.stop()
@@ -47,13 +141,9 @@ if page == "Dashboard Home":
         st.info("No dataset loaded yet. Go to **Upload Dataset** to get started.")
     else:
         risk_df = workbook["Invoice Risk Rankings"]
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Transactions", f"{len(risk_df):,}")
-        c2.metric("Avg Processing Lag", f"{risk_df['Processing Lag (d)'].mean():.1f} Days")
-        c3.metric("Average Risk", f"{risk_df['Risk Percentile'].mean():.1%}")
-        c4.metric("Total Obligations", f"${risk_df['Obligation ($)'].sum():,.0f}")
-        c5.metric("Est. Cashflow Penalty", f"${risk_df['Estimated Penalty'].sum():,.0f}")
+        render_headline(risk_df)
 
+        st.divider()
         metrics = workbook.get("_metrics", {})
         if metrics:
             st.caption(
@@ -109,14 +199,28 @@ elif page == "Analytics Dashboard":
 
     with tab1:
         st.header("Executive Summary")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Transactions", f"{len(risk_df):,}")
-        c2.metric("Average Lag", f"{risk_df['Processing Lag (d)'].mean():.1f} Days")
-        c3.metric("Average Risk", f"{risk_df['Risk Percentile'].mean():.1%}")
-        c4.metric("Obligations", f"${risk_df['Obligation ($)'].sum():,.0f}")
-        c5.metric("Estimated Penalty", f"${risk_df['Estimated Penalty'].sum():,.0f}")
-        st.subheader("County Summary")
-        st.dataframe(summary_df, use_container_width=True)
+        render_headline(risk_df)
+
+        st.divider()
+        st.subheader("By county")
+        st.caption(
+            "Sorted by average risk percentile. Counties at the top pair slow "
+            "processing with the invoices most likely to run late."
+        )
+        st.dataframe(
+            summary_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Transactions": st.column_config.NumberColumn("Invoices", format="%d"),
+                "Avg_Lag": st.column_config.NumberColumn("Avg wait", format="%.1f d"),
+                "Avg_Risk_Percentile": st.column_config.ProgressColumn(
+                    "Avg risk", min_value=0.0, max_value=1.0, format="percent"
+                ),
+                "Total_Obligation": st.column_config.NumberColumn("Obligated", format="dollar"),
+                "Total_Penalty": st.column_config.NumberColumn("Cost of delay", format="dollar"),
+            },
+        )
 
     with tab2:
         st.header("County Performance")
@@ -132,14 +236,14 @@ elif page == "Analytics Dashboard":
         )
         st.plotly_chart(px.bar(county_perf, x="County", y="Processing Lag (d)",
                                 title="Average Processing Lag by County"),
-                         use_container_width=True)
+                         width="stretch")
         st.plotly_chart(px.bar(county_perf, x="County", y="Risk Percentile",
                                 title="Average Risk Percentile by County"),
-                         use_container_width=True)
+                         width="stretch")
         st.plotly_chart(px.bar(county_perf, x="County", y="Estimated Penalty",
                                 title="Estimated Contractor Cashflow Penalties"),
-                         use_container_width=True)
-        st.dataframe(county_perf, use_container_width=True)
+                         width="stretch")
+        st.dataframe(county_perf, width="stretch")
 
     with tab3:
         st.header("Highest Risk Transactions")
@@ -147,9 +251,9 @@ elif page == "Analytics Dashboard":
         cols = ["County", "Recipient", "Awarding Agency", "CFDA Program",
                 "Obligation ($)", "Outlay ($)", "Processing Lag (d)",
                 "Risk Index", "Risk Percentile", "Risk Tier"]
-        st.dataframe(top_risk[cols], use_container_width=True)
+        st.dataframe(top_risk[cols], width="stretch")
         st.subheader("Top 25 Highest Risk Transactions")
-        st.dataframe(top_risk.head(25), use_container_width=True)
+        st.dataframe(top_risk.head(25), width="stretch")
 
     with tab4:
         st.header("Feature Importance Analysis")
@@ -158,24 +262,24 @@ elif page == "Analytics Dashboard":
         st.plotly_chart(
             px.bar(feature_df.head(20), x=feature_col, y=importance_col,
                    title="Structural Drivers of Late Payments"),
-            use_container_width=True,
+            width="stretch",
         )
-        st.dataframe(feature_df, use_container_width=True)
+        st.dataframe(feature_df, width="stretch")
         st.subheader("Agency Risk")
-        st.dataframe(agency_df, use_container_width=True)
+        st.dataframe(agency_df, width="stretch")
         numeric_cols = agency_df.select_dtypes(include=["number"]).columns
         if len(numeric_cols) > 0:
             st.plotly_chart(
                 px.bar(agency_df, x=agency_df.columns[0], y=numeric_cols[0],
                        title="Agency Risk Comparison"),
-                use_container_width=True,
+                width="stretch",
             )
         st.subheader("Program Risk")
-        st.dataframe(program_df, use_container_width=True)
+        st.dataframe(program_df, width="stretch")
         st.plotly_chart(
             px.bar(program_df, x="CFDA Program", y="Avg_Model_Risk",
                    title="Program Risk Comparison"),
-            use_container_width=True,
+            width="stretch",
         )
 
     with tab5:
@@ -193,13 +297,13 @@ elif page == "Analytics Dashboard":
         for d in delays:
             for amt in invoice_sizes:
                 matrix.loc[d, amt] = round(amt * (annual_rate / 365) * d, 2)
-        st.dataframe(matrix, use_container_width=True)
+        st.dataframe(matrix, width="stretch")
 
         penalty_df = risk_df.groupby("County")["Estimated Penalty"].sum().reset_index()
         st.plotly_chart(
             px.bar(penalty_df, x="County", y="Estimated Penalty",
                    title="County Contractor Cashflow Impact"),
-            use_container_width=True,
+            width="stretch",
         )
 
     with tab6:
@@ -212,6 +316,6 @@ elif page == "Analytics Dashboard":
         st.plotly_chart(
             px.bar(vendor_df.head(20), x="Recipient", y="Priority_Score",
                    title="Top 20 Vendors by Priority Score"),
-            use_container_width=True,
+            width="stretch",
         )
-        st.dataframe(vendor_df, use_container_width=True)
+        st.dataframe(vendor_df, width="stretch")
