@@ -43,7 +43,12 @@ def login_form() -> None:
         submitted = st.form_submit_button("Log in")
 
     if is_demo:
-        st.info("Demo credentials: demo@vendorsfirst.club / demo123")
+        st.warning(
+            "**Unsecured demo build.** No credentials are configured, so "
+            "anyone can sign in with `demo@vendorsfirst.club` / `demo123`. "
+            "Set real ones in `.streamlit/secrets.toml`, or in your host's "
+            "secrets UI, before sharing this URL."
+        )
 
     if submitted:
         if creds.get(email) == password:
