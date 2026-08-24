@@ -3,9 +3,24 @@ Analytics engine for the Government Payment Analytics Portal.
 
 This is a refactor of the interns' Week2.py (risk model) so it can run
 in-memory inside the Streamlit app instead of as a standalone script that
-reads/writes local files. The modeling logic (RandomForest late-payment
-classifier, feature importance, vendor/county/agency/program rollups) is
-unchanged from Week2.py -- only the I/O layer changed.
+reads/writes local files. The approach is Week2's: a RandomForest
+late-payment classifier on the same six features, feature importance, and
+vendor/county/agency/program rollups.
+
+Where it deliberately differs from Week2:
+
+* The forest uses 300 trees, not 500, to keep the upload responsive. On the
+  sample dataset that leaves accuracy identical and moves ROC AUC by under
+  0.01. Set it back to 500 if you want to match Week2's numbers exactly.
+* The county rollup carries the columns the dashboard shows (obligation and
+  penalty totals) instead of Week2's Avg_Model_Risk.
+* Two guards Week2 didn't have: a single-class label raises PipelineError
+  with an explanation, and the split drops stratification when a class has
+  only one row (sklearn would otherwise raise on it).
+* Estimated_Penalty is computed here rather than in the dashboard, so every
+  sheet is built in one place.
+* Week2's LogisticRegression comparison and ROC plot are not ported. They
+  were model-selection scratch work, and the SRS asks for no new modeling.
 
 It also fixes the schema mismatch between Week2.py's output and Week3.py's
 expected input: Week2 produced snake_case columns (Processing_Lag,
@@ -116,9 +131,15 @@ def run_risk_model(risk_df: pd.DataFrame) -> dict:
 
 def build_dashboard_workbook(file_like) -> dict:
     """
-    Full pipeline: raw upload -> Week2 modeling -> the exact sheet shapes
-    Week3's dashboard tabs expect. This is the "run the existing Python
-    analytics engine and populate the dashboard" step from the SRS.
+    Full pipeline: raw upload -> Week2 modeling -> the sheets the dashboard
+    renders. This is the "run the existing Python analytics engine and
+    populate the dashboard" step from the SRS.
+
+    The first four keys are the sheet names Week3.py read, in the shapes it
+    expected. "Program Risk" and "Vendor Targeting" are Week2 rollups that
+    Week3 had no tab for; app.py now shows them. Note that "Agency & Program
+    Risk" keeps its Week3 name but holds agency rows only -- the program
+    rows live under "Program Risk".
     """
     raw_df = load_raw_sheet(file_like)
     result = run_risk_model(raw_df)
@@ -169,10 +190,42 @@ def build_dashboard_workbook(file_like) -> dict:
         .reset_index()
     )
 
+    # ---- "Program Risk" sheet: Week2's program rollup
+    program_dashboard = (
+        risk_sheet.groupby("CFDA Program")
+        .agg(
+            Awards=("CFDA Program", "size"),
+            Avg_Lag=("Processing Lag (d)", "mean"),
+            Avg_Model_Risk=("Predicted_Risk", "mean"),
+        )
+        .sort_values("Avg_Model_Risk", ascending=False)
+        .reset_index()
+    )
+
+    # ---- "Vendor Targeting" sheet: Week2's vendor rollup and Priority_Score
+    vendor_dashboard = risk_sheet.groupby("Recipient").agg(
+        Awards=("Recipient", "size"),
+        Avg_Obligation=("Obligation ($)", "mean"),
+        Avg_Outlay=("Outlay ($)", "mean"),
+        Avg_Lag=("Processing Lag (d)", "mean"),
+        Avg_Model_Risk=("Predicted_Risk", "mean"),
+    )
+    vendor_dashboard["Priority_Score"] = (
+        vendor_dashboard["Avg_Model_Risk"]
+        * np.log1p(vendor_dashboard["Awards"])
+        * np.log1p(vendor_dashboard["Avg_Obligation"])
+        * np.log1p(vendor_dashboard["Avg_Lag"])
+    )
+    vendor_dashboard = vendor_dashboard.sort_values(
+        "Priority_Score", ascending=False
+    ).reset_index()
+
     return {
         "Executive Summary": county_dashboard,
         "Invoice Risk Rankings": risk_sheet,
         "Feature Importance": importance_df,
         "Agency & Program Risk": agency_dashboard,
+        "Program Risk": program_dashboard,
+        "Vendor Targeting": vendor_dashboard,
         "_metrics": result["metrics"],
     }

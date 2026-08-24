@@ -8,6 +8,10 @@ Home KPI page, and an upload step that actually runs the analytics engine
 on the uploaded file (Week2 and Week3 were previously disconnected --
 see README "Known Gaps").
 
+Also surfaces two Week2 rollups Week3 had no tab for: its program risk
+table (under Feature Importance) and its ranked vendor targeting list
+(a 6th tab). Both are existing intern analytics, not new modeling.
+
 Navigation: Login -> Dashboard Home -> Upload Dataset -> Analytics Dashboard -> Logout
 """
 
@@ -81,7 +85,8 @@ elif page == "Upload Dataset":
                 st.error(f"Couldn't process this file: {e}")
 
 # ============================================================
-# ANALYTICS DASHBOARD (Week3.py tabs, reused as-is)
+# ANALYTICS DASHBOARD (Week3.py's 5 tabs, reused as-is, plus a 6th for
+# Week2's vendor targeting list -- see README)
 # ============================================================
 elif page == "Analytics Dashboard":
     st.title("Analytics Dashboard")
@@ -94,10 +99,12 @@ elif page == "Analytics Dashboard":
     risk_df = workbook["Invoice Risk Rankings"]
     feature_df = workbook["Feature Importance"]
     agency_df = workbook["Agency & Program Risk"]
+    program_df = workbook["Program Risk"]
+    vendor_df = workbook["Vendor Targeting"]
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         ["Executive Summary", "County Performance", "High Risk Transactions",
-         "Feature Importance", "Working Capital Impact"]
+         "Feature Importance", "Working Capital Impact", "Vendor Targeting"]
     )
 
     with tab1:
@@ -154,7 +161,7 @@ elif page == "Analytics Dashboard":
             use_container_width=True,
         )
         st.dataframe(feature_df, use_container_width=True)
-        st.subheader("Agency & Program Risk")
+        st.subheader("Agency Risk")
         st.dataframe(agency_df, use_container_width=True)
         numeric_cols = agency_df.select_dtypes(include=["number"]).columns
         if len(numeric_cols) > 0:
@@ -163,6 +170,13 @@ elif page == "Analytics Dashboard":
                        title="Agency Risk Comparison"),
                 use_container_width=True,
             )
+        st.subheader("Program Risk")
+        st.dataframe(program_df, use_container_width=True)
+        st.plotly_chart(
+            px.bar(program_df, x="CFDA Program", y="Avg_Model_Risk",
+                   title="Program Risk Comparison"),
+            use_container_width=True,
+        )
 
     with tab5:
         st.header("Working Capital Sensitivity Modeling")
@@ -187,3 +201,17 @@ elif page == "Analytics Dashboard":
                    title="County Contractor Cashflow Impact"),
             use_container_width=True,
         )
+
+    with tab6:
+        st.header("Vendor Targeting")
+        st.caption(
+            "Week2's Priority_Score ranks vendors by model risk, scaled by how "
+            "many awards they hold, how large those awards are, and how long "
+            "they wait. Higher means a better prospect to approach."
+        )
+        st.plotly_chart(
+            px.bar(vendor_df.head(20), x="Recipient", y="Priority_Score",
+                   title="Top 20 Vendors by Priority Score"),
+            use_container_width=True,
+        )
+        st.dataframe(vendor_df, use_container_width=True)
