@@ -1,5 +1,6 @@
 """
-Builds data/sample_raw_dataset.xlsx -- the synthetic file used to demo the app.
+Builds a synthetic sample_raw_dataset_<timestamp>.xlsx file used to demo the app.
+Each run writes a new, timestamped file rather than overwriting the previous one.
 
 The first version of this dataset was random values, which meant the risk model
 had nothing to learn and scored worse than a coin flip on Dashboard Home. This
@@ -14,6 +15,7 @@ file before quoting any of these numbers to anyone.
 Run:  python data/generate_sample_dataset.py
 """
 
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +25,11 @@ SEED = 42
 N_ROWS = 600
 N_VENDORS = 180
 TITLE = "Invoice Late Payment Analysis - Sample / Mock Data"
-OUT_PATH = Path(__file__).parent / "sample_raw_dataset.xlsx"
+
+
+def make_out_path(timestamp: datetime | None = None) -> Path:
+    ts = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return Path(__file__).parent / f"sample_raw_dataset_{ts}.xlsx"
 
 # Baseline days added or removed by each dimension. These are what make the
 # dataset learnable: a slow agency really is slow across every county.
@@ -73,15 +79,12 @@ def build_frame() -> pd.DataFrame:
     )
     lag = np.clip(lag, 1.0, None).round(1)
 
-    # Risk Index / Percentile / Tier arrive precomputed in the real workbook,
-    # so derive them here the same way: driven by lag, nudged by award size.
-    raw_risk = 0.75 * lag + 0.25 * (lag.mean() * size_effect / max(size_effect.std(), 1e-9))
-    risk_index = (raw_risk - raw_risk.min()) / (raw_risk.max() - raw_risk.min())
-    risk_pct = pd.Series(risk_index).rank(pct=True).to_numpy()
-    risk_tier = pd.cut(
-        risk_pct, bins=[0, 1 / 3, 2 / 3, 1.0], labels=["Low", "Medium", "High"],
-        include_lowest=True,
-    )
+    # Risk Index / Percentile / Tier used to be derived here and shipped as
+    # columns in the raw file. A real upload would never come with those
+    # precomputed, so that logic now lives in analytics/pipeline.py
+    # (see `derive_risk_scores`), which runs on whatever raw file is
+    # uploaded -- this generated one included. This function only produces
+    # the columns a real raw dataset would actually have.
 
     return pd.DataFrame({
         "County": county,
@@ -92,18 +95,16 @@ def build_frame() -> pd.DataFrame:
         "Outlay ($)": outlay,
         "% Outlayed": pct_outlayed,
         "Processing Lag (d)": lag,
-        "Risk Index": risk_index.round(3),
-        "Risk Percentile": risk_pct.round(3),
-        "Risk Tier": risk_tier,
     })
 
 
 def main() -> None:
     df = build_frame()
-    with pd.ExcelWriter(OUT_PATH, engine="openpyxl") as writer:
+    out_path = make_out_path()
+    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Invoice Risk Rankings", index=False, startrow=1)
         writer.sheets["Invoice Risk Rankings"]["A1"] = TITLE
-    print(f"Wrote {OUT_PATH} ({len(df)} rows)")
+    print(f"Wrote {out_path} ({len(df)} rows)")
 
 
 if __name__ == "__main__":

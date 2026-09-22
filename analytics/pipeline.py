@@ -21,6 +21,13 @@ Where it deliberately differs from Week2:
   sheet is built in one place.
 * Week2's LogisticRegression comparison and ROC plot are not ported. They
   were model-selection scratch work, and the SRS asks for no new modeling.
+* Risk_Index, Risk_Percentile, and Risk_Tier used to arrive precomputed on
+  the uploaded file (data/generate_sample_dataset.py built them). A real
+  raw dataset would have no equivalent columns, so they're now derived here
+  instead -- see `derive_risk_scores` -- from columns every raw upload
+  actually has (Processing_Lag, Obligation). Nothing downstream changed:
+  build_dashboard_workbook() still emits the same sheet shapes, so app.py
+  needs no changes.
 
 It also fixes the schema mismatch between Week2.py's output and Week3.py's
 expected input: Week2 produced snake_case columns (Processing_Lag,
@@ -46,9 +53,6 @@ RAW_COLUMNS = [
     "Outlay",
     "Pct_Outlayed",
     "Processing_Lag",
-    "Risk_Index",
-    "Risk_Percentile",
-    "Risk_Tier",
 ]
 
 
@@ -69,16 +73,69 @@ def load_raw_sheet(file_like) -> pd.DataFrame:
             f"Invoice_Late_Payment_Analysis template."
         )
 
-    df.columns = RAW_COLUMNS + list(df.columns[len(RAW_COLUMNS):])
+    # Keep only the template's own columns, dropping anything past them by
+    # position. Older raw files (pre-derive_risk_scores) shipped three extra
+    # trailing columns -- Risk Index / Risk Percentile / Risk Tier, already
+    # precomputed. Keeping those verbatim would collide with the same-named
+    # columns derive_risk_scores adds below, producing duplicate columns
+    # downstream instead of an error.
+    df = df.iloc[:, :len(RAW_COLUMNS)]
+    df.columns = RAW_COLUMNS
     df = df.dropna(subset=["County", "Recipient", "Awarding_Agency", "CFDA_Program"])
 
-    numeric_cols = [
-        "Obligation", "Outlay", "Pct_Outlayed",
-        "Processing_Lag", "Risk_Index", "Risk_Percentile",
-    ]
+    numeric_cols = ["Obligation", "Outlay", "Pct_Outlayed", "Processing_Lag"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
+
+    return df
+
+
+def derive_risk_scores(df: pd.DataFrame) -> pd.DataFrame:
+    """Add Risk_Index, Risk_Percentile, and Risk_Tier to a loaded raw sheet.
+
+    These three used to arrive precomputed in the uploaded workbook (built
+    by data/generate_sample_dataset.py). A real raw dataset has no such
+    columns, so they're computed here instead, right after the raw sheet is
+    loaded and before the risk model ever sees the data -- these are plain
+    feature engineering, not model output.
+
+    Method (same formula the generator used to apply):
+      * `size_effect` -- award size, log-scaled and centered on the
+        dataset's own mean. Larger obligations tend to clear more slowly,
+        so this nudges the score without needing a trained model.
+      * `Risk_Index` blends Processing_Lag (75% weight) with that size
+        effect (25% weight), then min-max scales the result to [0, 1] so
+        it reads like a normalized risk score.
+      * `Risk_Percentile` is each row's `Risk_Index` rank within the
+        dataset, expressed as a fraction (0-1).
+      * `Risk_Tier` buckets `Risk_Percentile` into equal thirds -- Low /
+        Medium / High.
+
+    Where these are used downstream: build_dashboard_workbook() renames all
+    three straight into the "Invoice Risk Rankings" sheet, and the county
+    rollup on "Executive Summary" averages Risk_Percentile per county. In
+    app.py, "High Risk Transactions" sorts on Risk Percentile -- not on the
+    RandomForest's own Predicted_Risk (see HANDOFF.md's "traps" section).
+    """
+    df = df.copy()
+    lag = df["Processing_Lag"].to_numpy()
+    obligation = df["Obligation"].to_numpy()
+
+    log_obligation = np.log(obligation)
+    size_effect = 4.5 * (log_obligation - log_obligation.mean())
+
+    raw_risk = 0.75 * lag + 0.25 * (lag.mean() * size_effect / max(size_effect.std(), 1e-9))
+    risk_index = (raw_risk - raw_risk.min()) / (raw_risk.max() - raw_risk.min())
+    risk_pct = pd.Series(risk_index).rank(pct=True).to_numpy()
+    risk_tier = pd.cut(
+        risk_pct, bins=[0, 1 / 3, 2 / 3, 1.0], labels=["Low", "Medium", "High"],
+        include_lowest=True,
+    )
+
+    df["Risk_Index"] = risk_index.round(3)
+    df["Risk_Percentile"] = risk_pct.round(3)
+    df["Risk_Tier"] = risk_tier
 
     return df
 
@@ -142,6 +199,7 @@ def build_dashboard_workbook(file_like) -> dict:
     rows live under "Program Risk".
     """
     raw_df = load_raw_sheet(file_like)
+    raw_df = derive_risk_scores(raw_df)
     result = run_risk_model(raw_df)
     risk_df = result["risk_df"]
     importance_df = result["importance_df"]
