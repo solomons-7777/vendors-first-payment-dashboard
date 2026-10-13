@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Landmark, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { getSession, signOut, type Session } from "@/lib/auth-store";
+import { getSession, signOut } from "@/lib/auth-store";
+import { useClientHydrated } from "@/lib/use-require-auth";
 import { clearWorkbook } from "@/lib/workbook-store";
 
 export function TopBar() {
   const router = useRouter();
-  const [session, setSession] = useState<Session | null>(null);
-
-  useEffect(() => {
-    setSession(getSession());
-  }, []);
+  const hydrated = useClientHydrated();
+  const session = hydrated ? getSession() : null;
 
   function handleSignOut() {
     signOut();

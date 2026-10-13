@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { PageShell } from "@/components/layout/PageShell";
@@ -8,8 +8,8 @@ import { Tabs, type TabItem } from "@/components/dashboard/Tabs";
 import { ExecutiveSummaryTab } from "@/components/dashboard/tabs/ExecutiveSummaryTab";
 import { RiskRankingsTab } from "@/components/dashboard/tabs/RiskRankingsTab";
 import { FeatureImportanceTab } from "@/components/dashboard/tabs/FeatureImportanceTab";
-import { GroupRiskTab } from "@/components/dashboard/tabs/GroupRiskTab";
-import { VendorTargetingTab } from "@/components/dashboard/tabs/VendorTargetingTab";
+import { AgencyProgramRiskTab } from "@/components/dashboard/tabs/AgencyProgramRiskTab";
+import { VendorImpactTab } from "@/components/dashboard/tabs/VendorImpactTab";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import { getWorkbook, getWorkbookFilename } from "@/lib/workbook-store";
 import type { Workbook } from "@/lib/types";
@@ -17,19 +17,15 @@ import type { Workbook } from "@/lib/types";
 export default function DashboardPage() {
   const router = useRouter();
   const { ready } = useRequireAuth();
-  const [workbook, setWorkbook] = useState<Workbook | null>(null);
-  const [filename, setFilename] = useState<string | null>(null);
+  const workbook: Workbook | null = ready ? getWorkbook() : null;
+  const filename = ready ? getWorkbookFilename() : null;
+  const hasWorkbook = workbook !== null;
 
   useEffect(() => {
-    if (!ready) return;
-    const existing = getWorkbook();
-    if (!existing) {
+    if (ready && !hasWorkbook) {
       router.replace("/upload");
-      return;
     }
-    setWorkbook(existing);
-    setFilename(getWorkbookFilename());
-  }, [ready, router]);
+  }, [hasWorkbook, ready, router]);
 
   if (!ready || !workbook) return null;
 
@@ -51,40 +47,25 @@ export default function DashboardPage() {
       content: <RiskRankingsTab rows={workbook["Invoice Risk Rankings"]} />,
     },
     {
-      key: "feature-importance",
-      label: "Feature Importance",
-      content: <FeatureImportanceTab rows={workbook["Feature Importance"]} />,
-    },
-    {
       key: "agency-risk",
       label: "Agency & Program Risk",
       content: (
-        <GroupRiskTab
-          rows={workbook["Agency & Program Risk"]}
-          getName={(r) => r["Awarding Agency"]}
-          nameLabel="Agency"
-          nameLabelPlural="Agencies"
-          chartTitle="Highest-risk awarding agencies"
+        <AgencyProgramRiskTab
+          agencies={workbook["Agency & Program Risk"]}
+          programs={workbook["Program Risk"]}
         />
       ),
     },
     {
-      key: "program-risk",
-      label: "Program Risk",
-      content: (
-        <GroupRiskTab
-          rows={workbook["Program Risk"]}
-          getName={(r) => r["CFDA Program"]}
-          nameLabel="Program"
-          nameLabelPlural="Programs"
-          chartTitle="Highest-risk CFDA programs"
-        />
-      ),
+      key: "vendor-impact",
+      label: "Vendor Impact",
+      content: <VendorImpactTab rows={workbook["Invoice Risk Rankings"]} />,
     },
     {
-      key: "vendor-targeting",
-      label: "Vendor Targeting",
-      content: <VendorTargetingTab rows={workbook["Vendor Targeting"]} />,
+      key: "feature-importance",
+      label: "Feature Importance",
+      section: "insights",
+      content: <FeatureImportanceTab rows={workbook["Feature Importance"]} />,
     },
   ];
 
